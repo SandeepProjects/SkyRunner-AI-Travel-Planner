@@ -1,7 +1,9 @@
 streamlit
 psycopg[binary]
+psycopg-pool
 python-dotenv
 langgraph
+langgraph-checkpoint-postgres
 langchain-core
 langchain-groq
 tavily-python
