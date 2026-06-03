@@ -212,17 +212,30 @@ with st.sidebar:
     st.markdown("<p style='text-align:center; color:#94A3B8; font-size:0.9rem; margin-top:-10px;'>Command Center</p>", unsafe_allow_html=True)
     st.markdown("<hr style='border-color:rgba(255,255,255,0.05); margin:10px 0;'>", unsafe_allow_html=True)
 
-    # Database Status
-    db_url = os.getenv("DATABASE_URL")
-    db_status = "Disconnected"
+    # Database Status — read from st.secrets (cloud) or os.getenv (local)
     try:
-        with psycopg.connect(db_url) as conn:
-            db_status = "Connected"
+        db_url = st.secrets.get("DATABASE_URL", None) or os.getenv("DATABASE_URL")
     except Exception:
-        db_status = "Error"
+        db_url = os.getenv("DATABASE_URL")
+
+    db_status = "Disconnected"
+    db_label = "Not configured"
+    if db_url:
+        # Extract a safe display name from the URL (no password)
+        try:
+            # Show only the host portion, never the password
+            db_label = db_url.split("@")[-1].split("/")[0] if "@" in db_url else "configured"
+        except Exception:
+            db_label = "configured"
+        try:
+            import psycopg
+            with psycopg.connect(db_url) as conn:
+                db_status = "Connected"
+        except Exception:
+            db_status = "Error"
         
     badge_cls = "badge-success" if db_status == "Connected" else "badge-error"
-    
+
     st.markdown(f"""
     <div class='sidebar-block'>
         <div style='font-size:0.8rem; color:#94A3B8; margin-bottom:5px;'>SYSTEM STATUS</div>
@@ -230,21 +243,25 @@ with st.sidebar:
             <span style='font-size:0.9rem;'>PostgreSQL</span>
             <span class='badge {badge_cls}'>{db_status}</span>
         </div>
-        <div style='font-size:0.8rem; color:#64748B;'>DB: multi_agent_flight</div>
+        <div style='font-size:0.8rem; color:#64748B;'>Host: {db_label}</div>
     </div>
     """, unsafe_allow_html=True)
     
-    # Memory Status
+    # Memory Thread ID — label provided for accessibility, hidden visually
     st.markdown("<div style='font-size:0.8rem; color:#94A3B8; margin-bottom:5px;'>MEMORY THREAD ID</div>", unsafe_allow_html=True)
-    thread_id = st.text_input("", value="skyrunner_cmd_1", label_visibility="collapsed")
+    thread_id = st.text_input("Memory Thread ID", value="skyrunner_cmd_1", label_visibility="collapsed")
     
     # API Variables
     st.markdown("""<div class='sidebar-block'>
         <div style='font-size:0.8rem; color:#94A3B8; margin-bottom:10px;'>API CONNECTIVITY</div>""", unsafe_allow_html=True)
         
     for key in ["GROQ_API_KEY", "TAVILY_API_KEY", "AVIATIONSTACK_API_KEY"]:
-        val = os.getenv(key)
-        status_html = "<span class='badge badge-success' style='float:right;'>OK</span>" if val and val.strip(" ;\"'") else "<span class='badge badge-error' style='float:right;'>ERR</span>"
+        # Check st.secrets first (cloud), then os.getenv (local)
+        try:
+            val = st.secrets.get(key, None) or os.getenv(key)
+        except Exception:
+            val = os.getenv(key)
+        status_html = "<span class='badge badge-success' style='float:right;'>OK</span>" if val and str(val).strip(" ;\"'") else "<span class='badge badge-error' style='float:right;'>ERR</span>"
         label = key.replace('_API_KEY', '')
         st.markdown(f"<div style='margin-bottom:8px; font-size:0.85rem;'>{label} {status_html}</div>", unsafe_allow_html=True)
         

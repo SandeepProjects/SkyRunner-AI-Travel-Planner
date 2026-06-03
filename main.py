@@ -22,9 +22,35 @@ try:
 except ImportError:
     POSTGRES_AVAILABLE = False
 
-groq_api_key = (os.getenv("GROQ_API_KEY") or "").strip(" ;\"'")
-groq_model = (os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile").strip(" ;\"'")
-database_url = (os.getenv("DATABASE_URL") or "").strip(" ;\"'")
+
+def _get_secret(key: str, default: str = "") -> str:
+    """Read from Streamlit secrets first (cloud), then .env / environment (local)."""
+    try:
+        import streamlit as st
+        val = st.secrets.get(key, None)
+        if val:
+            return str(val).strip(" ;\"'")
+    except Exception:
+        pass
+    return (os.getenv(key) or default).strip(" ;\"'")
+
+
+def _make_db_url(raw_url: str) -> str:
+    """Ensure sslmode=require is present for cloud (Supabase) connections."""
+    if not raw_url:
+        return raw_url
+    # Only add SSL param for non-localhost connections
+    if "localhost" in raw_url or "127.0.0.1" in raw_url:
+        return raw_url
+    if "sslmode" not in raw_url:
+        sep = "&" if "?" in raw_url else "?"
+        return raw_url + sep + "sslmode=require"
+    return raw_url
+
+
+groq_api_key = _get_secret("GROQ_API_KEY")
+groq_model   = _get_secret("GROQ_MODEL", "llama-3.3-70b-versatile")
+database_url  = _make_db_url(_get_secret("DATABASE_URL"))
 
 llm = ChatGroq(
     model=groq_model,
