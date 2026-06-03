@@ -1,0 +1,8 @@
+streamlit
+psycopg[binary]
+python-dotenv
+langgraph
+langchain-core
+langchain-groq
+tavily-python
+requests
