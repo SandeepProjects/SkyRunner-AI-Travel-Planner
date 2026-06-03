@@ -1,11 +1,10 @@
 import os
 import operator
 from typing import TypedDict, Annotated, List, Any
-import psycopg
 from dotenv import load_dotenv
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.memory import MemorySaver
 
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_groq import ChatGroq
@@ -14,6 +13,14 @@ from tools.tavily_tool import tavily_search
 from tools.flight_tool import search_flights
 
 load_dotenv()
+
+# Try to import PostgreSQL checkpointer — gracefully fall back to in-memory
+try:
+    import psycopg
+    from langgraph.checkpoint.postgres import PostgresSaver
+    POSTGRES_AVAILABLE = True
+except ImportError:
+    POSTGRES_AVAILABLE = False
 
 groq_api_key = (os.getenv("GROQ_API_KEY") or "").strip(" ;\"'")
 groq_model = (os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile").strip(" ;\"'")
@@ -95,12 +102,7 @@ def build_graph():
 
 def run_travel_agent(user_query: str, thread_id: str = "skyrunner_dashboard") -> dict:
     graph_builder = build_graph()
-    
-    connection_kwargs = {
-        "autocommit": True,
-        "prepare_threshold": 0,
-    }
-    
+
     result = {
         "success": False,
         "user_query": user_query,
@@ -112,38 +114,50 @@ def run_travel_agent(user_query: str, thread_id: str = "skyrunner_dashboard") ->
         "thread_id": thread_id,
         "agent_steps": []
     }
-    
+
+    def _run_graph(app):
+        thread = {"configurable": {"thread_id": thread_id}}
+        initial_state = {
+            "user_query": user_query,
+            "messages": [HumanMessage(content=user_query)],
+            "llm_calls": 0
+        }
+        for event in app.stream(initial_state, thread, stream_mode="values"):
+            if "messages" in event and len(event["messages"]) > 0:
+                latest_message = event["messages"][-1]
+                if isinstance(latest_message, AIMessage):
+                    result["agent_steps"].append(latest_message.content)
+
+        final_state = app.get_state(thread).values
+        result["success"] = True
+        result["flight_results"] = final_state.get("flight_results", "")
+        result["hotel_results"] = final_state.get("hotel_results", "")
+        result["itinerary"] = final_state.get("itinerary", "")
+        result["final_answer"] = final_state.get("itinerary", "")
+        result["llm_calls"] = final_state.get("llm_calls", 0)
+
+    # Try PostgreSQL first; fall back to in-memory if unavailable
+    if POSTGRES_AVAILABLE and database_url:
+        try:
+            connection_kwargs = {"autocommit": True, "prepare_threshold": 0}
+            with psycopg.connect(database_url, **connection_kwargs) as conn:
+                checkpointer = PostgresSaver(conn)
+                checkpointer.setup()
+                app = graph_builder.compile(checkpointer=checkpointer)
+                _run_graph(app)
+                return result
+        except Exception as db_err:
+            # DB failed — fall through to in-memory
+            print(f"[SkyRunner] PostgreSQL unavailable, using memory: {db_err}")
+
+    # In-memory fallback (works without any database)
     try:
-        with psycopg.connect(database_url, **connection_kwargs) as conn:
-            checkpointer = PostgresSaver(conn)
-            checkpointer.setup()
-            app = graph_builder.compile(checkpointer=checkpointer)
-
-            thread = {"configurable": {"thread_id": thread_id}}
-            
-            initial_state = {
-                "user_query": user_query,
-                "messages": [HumanMessage(content=user_query)],
-                "llm_calls": 0
-            }
-
-            for event in app.stream(initial_state, thread, stream_mode="values"):
-                if "messages" in event and len(event["messages"]) > 0:
-                    latest_message = event["messages"][-1]
-                    if isinstance(latest_message, AIMessage):
-                        result["agent_steps"].append(latest_message.content)
-
-            final_state = app.get_state(thread).values
-            result["success"] = True
-            result["flight_results"] = final_state.get("flight_results", "")
-            result["hotel_results"] = final_state.get("hotel_results", "")
-            result["itinerary"] = final_state.get("itinerary", "")
-            result["final_answer"] = final_state.get("itinerary", "")
-            result["llm_calls"] = final_state.get("llm_calls", 0)
-            
+        checkpointer = MemorySaver()
+        app = graph_builder.compile(checkpointer=checkpointer)
+        _run_graph(app)
     except Exception as e:
         result["final_answer"] = f"Error running agent: {str(e)}"
-        
+
     return result
 
 def main():
